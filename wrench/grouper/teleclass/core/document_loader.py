@@ -6,7 +6,6 @@ from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
 from wrench.grouper.teleclass.core.models import Document
-from wrench.models import Item
 
 
 class DocumentLoader(Protocol):
@@ -78,12 +77,12 @@ class ModelDocumentLoader:
             and returns a list of DocumentMeta instances.
     """
 
-    def __init__(self, documents: list[Item]):
+    def __init__(self, documents: list[BaseModel]):
         """
         Initialize the DocumentLoader with a list of documents.
 
         Args:
-            documents (list[Item]): A list of Item instances.
+            documents (list[BaseModel]): A list of BaseModel instances.
 
         Raises:
             TypeError: If documents is not a list or if any element
@@ -92,15 +91,15 @@ class ModelDocumentLoader:
         if not isinstance(documents, list) or not all(
             isinstance(doc, BaseModel) for doc in documents
         ):
-            raise TypeError("documents must be a list of Item instances")
+            raise TypeError("documents must be a list of BaseModel instances")
         self.documents = documents
 
     def load(self, encoder: SentenceTransformer) -> list[Document]:
         return [
             Document(
-                id=doc.id,
+                id=str(id),
                 content=doc.model_dump_json(),
                 embeddings=encoder.encode(doc.model_dump_json(), convert_to_numpy=True),
             )
-            for doc in self.documents
+            for id, doc in enumerate(self.documents)
         ]

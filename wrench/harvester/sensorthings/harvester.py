@@ -1,16 +1,21 @@
 import time
 from datetime import datetime, timezone
+from functools import reduce
+from operator import __or__
 from pathlib import Path
 
 import requests
-from geojson import Polygon
+from geojson import MultiPoint, Polygon
 
+from wrench.grouper.base import Group
 from wrench.harvester.base import BaseHarvester
 from wrench.log import logger
-from wrench.models import CommonMetadata, Item, TimeFrame
+from wrench.models import CommonMetadata, TimeFrame
 
 from .config import SensorThingsConfig
+from .contentgenerator import ContentGenerator
 from .models import GenericLocation, Location, SensorThingsBase, Thing
+from .querybuilder import FilterExpression, ThingQuery
 from .translator import LibreTranslateService
 
 
@@ -25,6 +30,7 @@ class SensorThingsHarvester(BaseHarvester):
     def __init__(
         self,
         config: SensorThingsConfig | str | Path,
+        content_generator: ContentGenerator,
         location_model: type[GenericLocation] = Location,
     ):
         """
@@ -32,6 +38,8 @@ class SensorThingsHarvester(BaseHarvester):
 
         Args:
             config (SensorThingsConfig | str | Path): Configuration for the harvester.
+            content_generator (ContentGenerator): Content generator for generating
+                    name and description for device group metadata
             location_model (type[GenericLocation], optional): Custom Location Model.
 
         Attributes:
@@ -58,9 +66,10 @@ class SensorThingsHarvester(BaseHarvester):
 
         self.location_model = location_model
 
-        self.things = self.fetch_things(limit=self.config.default_limit)
+        self.things = self.fetch_items(limit=self.config.default_limit)
+        self.generator = content_generator
 
-    def get_metadata(self) -> CommonMetadata:
+    def get_service_metadata(self) -> CommonMetadata:
         """
         Retrieves metadata for the SensorThings data.
 
@@ -73,18 +82,10 @@ class SensorThingsHarvester(BaseHarvester):
                             identifier, description, spatial extent, temporal extent,
                             source type, and last updated time.
         """
-        # get locations of each thing, put them into a set to avoid duplicates
-        locations = {
-            loc.get_coordinates()
-            for thing in self.things
-            if thing.location
-            for loc in thing.location
-        }
-
-        geographic_extent = self._calculate_geographic_extent(locations)
+        geographic_extent = self._calculate_polygonal_geographic_extent(self.things)
         timeframe = self._calculate_timeframe(self.things)
 
-        return CommonMetadata(
+        self.metadata = CommonMetadata(
             endpoint_url=self.config.base_url,
             title=self.config.title,
             identifier=self.config.identifier,
@@ -95,16 +96,12 @@ class SensorThingsHarvester(BaseHarvester):
             last_updated=timeframe.latest_time,
         )
 
-    def get_items(self) -> list[Item]:
-        """
-        Retrieve the list of Thing objects.
+        return self.metadata
 
-        Returns:
-            list[Thing]: A list of Thing objects.
-        """
+    def return_items(self) -> list[Thing]:
         return self.things
 
-    def fetch_things(self, limit: int = -1) -> list[Thing]:
+    def fetch_items(self, limit: int = -1) -> list[Thing]:
         """
         Fetches a list of Thing objects, optionally translating them if configured.
 
@@ -140,20 +137,42 @@ class SensorThingsHarvester(BaseHarvester):
 
         return translated_things
 
-    def fetch_locations(self, limit: int = -1) -> list[GenericLocation]:
+    def get_device_group_metadata(self, group: Group) -> CommonMetadata:
         """
-        Fetches a list of locations from the SensorThings API.
-
-        Args:
-            limit (int, optional): The maximum number of locations to fetch.
-                                   If set to -1, fetches all available locations.
-                                   Defaults to -1.
+        Groups a list of Things and builds their metadata.
 
         Returns:
-            list[GenericLocation]: A list of fetched locations.
+            metadata (CommonMetadata): CommonMetadata extracted
+            from the groups
         """
-        self.logger.debug("Fetching %d locations", limit if limit != -1 else 0)
-        return self._fetch_paginated("Locations", self.location_model, limit=limit)
+        things_in_group = [Thing.model_validate_json(thing) for thing in group.items]
+
+        geographic_extent = self._calculate_multipoint_geographic_extent(
+            things_in_group
+        )
+
+        timeframe = self._calculate_timeframe(things_in_group)
+
+        endpoint_url = self._build_group_url(things_in_group)
+
+        name, description = self.generate_group_metadata(group)
+
+        return CommonMetadata(
+            identifier=name.lower().strip().replace(" ", "_"),
+            title=name,
+            description=description,
+            endpoint_url=endpoint_url,
+            tags=list(group.parent_classes),
+            source_type="sensorthings",
+            temporal_extent=timeframe,
+            spatial_extent=str(geographic_extent),
+            last_updated=timeframe.latest_time,
+            thematic_groups=list(group.parent_classes),
+        )
+
+    def generate_group_metadata(self, group: Group) -> tuple[str, str]:
+        name, description = self.generator.generate_content(self.metadata, group)
+        return name, description
 
     def _fetch_paginated[T: SensorThingsBase](
         self, endpoint: str, model_class: type[T], limit: int = -1
@@ -263,14 +282,12 @@ class SensorThingsHarvester(BaseHarvester):
 
         return processed_items
 
-    def _calculate_geographic_extent(
-        self, locations: set[tuple[float, float]]
-    ) -> Polygon:
+    def _calculate_polygonal_geographic_extent(self, things: list[Thing]) -> Polygon:
         """
         Calculate the geographic bounding box from a set of locations.
 
         Args:
-            locations: Set of locations with coordinate data
+            things: Set of things with location data
 
         Returns:
             Polygon: GeoJSON polygon representing the bounding box
@@ -281,6 +298,14 @@ class SensorThingsHarvester(BaseHarvester):
             "max_lat": float("-inf"),
             "min_lng": float("inf"),
             "max_lng": float("-inf"),
+        }
+
+        # get locations of each thing, put them into a set to avoid duplicates
+        locations = {
+            loc.get_coordinates()
+            for thing in things
+            if thing.location
+            for loc in thing.location
         }
 
         # Update bounds for each location
@@ -300,6 +325,18 @@ class SensorThingsHarvester(BaseHarvester):
         ]
 
         return Polygon([coordinates])
+
+    def _calculate_multipoint_geographic_extent(
+        self, things: list[Thing]
+    ) -> MultiPoint:
+        locations = [
+            loc.get_coordinates()
+            for thing in things
+            if thing.location
+            for loc in thing.location
+        ]
+
+        return MultiPoint(locations)
 
     def _calculate_timeframe(self, things: list[Thing]) -> TimeFrame:
         """
@@ -344,3 +381,17 @@ class SensorThingsHarvester(BaseHarvester):
         return TimeFrame(
             start_time=time_bounds["earliest"], latest_time=time_bounds["latest"]
         )
+
+    def _build_group_url(self, things: list[Thing]) -> str:
+        filters: list[FilterExpression] = []
+
+        for thing in things:
+            filters.append(ThingQuery.property("@iot.id").eq(thing.id))
+        if filters:
+            filter_expression = reduce(__or__, filters)
+        else:
+            raise ValueError("Filters is empty, check if @iot.id exists")
+
+        query = ThingQuery().filter(filter_expression).build()
+
+        return f"{self.config.base_url}/{query}"

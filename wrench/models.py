@@ -79,6 +79,7 @@ class CommonMetadata(BaseModel):
     temporal_extent: TimeFrame | None = None
     tags: list[str] = []
     keywords: list[str] = []
+    thematic_groups: list[str] = []
 
     # data quality and provenance
     source_type: str
@@ -88,8 +89,3 @@ class CommonMetadata(BaseModel):
 
     # license and access information
     license: str | None = None
-
-
-class CatalogEntry(BaseModel):
-    name: str
-    description: str

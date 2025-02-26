@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 from wrench.log import logger
-from wrench.models import CatalogEntry
+from wrench.models import CommonMetadata
 
 
 class BaseCatalogger(ABC):
@@ -19,5 +19,5 @@ class BaseCatalogger(ABC):
         self.logger = logger.getChild(self.__class__.__name__)
 
     @abstractmethod
-    def register(self, service: CatalogEntry, groups: list[CatalogEntry]):
+    def register(self, service: CommonMetadata, groups: list[CommonMetadata]):
         pass

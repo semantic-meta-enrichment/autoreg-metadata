@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Union
 
 import numpy as np
+from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
 from wrench.grouper.base import BaseGrouper, Group
@@ -25,7 +26,6 @@ from wrench.grouper.teleclass.core.taxonomy_manager import TaxonomyManager
 from wrench.grouper.teleclass.enrichment.corpus import CorpusEnricher
 from wrench.grouper.teleclass.enrichment.llm import LLMEnricher
 from wrench.log import logger
-from wrench.models import Item
 
 
 class TELEClassGrouper(BaseGrouper):
@@ -85,13 +85,13 @@ class TELEClassGrouper(BaseGrouper):
 
         self.logger = logger.getChild(self.__class__.__name__)
 
-    def _load_items(self, source: Union[str, Path, list[Item]]) -> list[Document]:
+    def _load_items(self, source: Union[str, Path, list[BaseModel]]) -> list[Document]:
         """Loads and processes documents from various input sources.
 
         Args:
             source: Input source for documents. Can be:
                 - str or Path: Path to a JSON file containing documents
-                - list[Item]: List of pydantic model instances representing documents
+                - list[BaseModel]: List of pydantic model instances representing documents
 
         Returns:
             list[DocumentMeta]: List of processed documents with embeddings.
@@ -273,7 +273,7 @@ class TELEClassGrouper(BaseGrouper):
 
         return self.classifier_manager.predict(text)
 
-    def group_items(self, items: Union[str, Path, list[Item]]) -> list[Group]:
+    def group_items(self, items: Union[str, Path, list[BaseModel]]) -> list[Group]:
         """
         Groups a collection of documents into predefined categories.
 
@@ -323,7 +323,7 @@ class TELEClassGrouper(BaseGrouper):
             self.logger.exception("Classification failed with error: %s", str(e))
             raise
 
-    def evaluate_classifier(self, documents: Union[str, Path, list[Item]]):
+    def evaluate_classifier(self, documents: Union[str, Path, list[BaseModel]]):
         """
         Evaluates the classifier using the provided documents.
 

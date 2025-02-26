@@ -1,16 +1,13 @@
-from typing import TYPE_CHECKING, Optional
-
-from wrench.adapter.base import BaseCatalogAdapter
-from wrench.log import logger
+from typing import Optional
 
 # Use TYPE_CHECKING for imports needed only for type hints
-if TYPE_CHECKING:
-    from wrench.catalogger.base import BaseCatalogger
-    from wrench.grouper.base import BaseGrouper
-    from wrench.harvester.base import BaseHarvester
+from wrench.catalogger.base import BaseCatalogger
+from wrench.grouper.base import BaseGrouper
+from wrench.harvester.base import BaseHarvester
+from wrench.log import logger
 
 
-class Pipeline[H: BaseHarvester, C: BaseCatalogger, G: BaseGrouper]:
+class Pipeline:
     """
     A composable pipeline for processing sensor data.
 
@@ -19,10 +16,9 @@ class Pipeline[H: BaseHarvester, C: BaseCatalogger, G: BaseGrouper]:
 
     def __init__(
         self,
-        harvester: H,
-        catalogger: C,
-        adapter: BaseCatalogAdapter,
-        grouper: Optional[G] = None,
+        harvester: BaseHarvester,
+        catalogger: BaseCatalogger,
+        grouper: Optional[BaseGrouper] = None,
     ):
         """
         Initialize the pipeline with the given components.
@@ -36,7 +32,6 @@ class Pipeline[H: BaseHarvester, C: BaseCatalogger, G: BaseGrouper]:
         self.harvester = harvester
         self.catalogger = catalogger
         self.grouper = grouper
-        self.adapter = adapter
         self.logger = logger.getChild(self.__class__.__name__)
 
     def run(self):
@@ -50,43 +45,48 @@ class Pipeline[H: BaseHarvester, C: BaseCatalogger, G: BaseGrouper]:
             self.harvester.__class__.__name__,
             self.grouper.__class__.__name__,
             self.catalogger.__class__.__name__,
-            self.adapter.__class__.__name__,
         )
         try:
             # Step 1: Harvest data
             self.logger.debug("Retrieving data with harvester")
-            service_metadata = self.harvester.get_metadata()
-            documents = self.harvester.get_items()
+            service_metadata = self.harvester.get_service_metadata()
+            documents = self.harvester.return_items()
             if not service_metadata or not documents:
                 self.logger.warning("No data retrieved from harvester")
                 return None
 
             # Step 2: Optional classification
-            grouped_docs = None
+            grouped_docs = []
             if self.grouper is not None:
                 self.logger.debug("Starting classification")
                 try:
-                    grouped_docs = self.grouper.group_items(documents)
+                    grouped_docs.extend(self.grouper.group_items(documents))
                 except Exception as e:
                     self.logger.error("Classification failed: %s", e)
                     # Continue pipeline even if classification fails
 
             # Step 3: Run results through adapter
-            service_entry = self.adapter.create_service_entry(service_metadata)
+            # service_entry, group_entries = self.adapter.create_entries(
+            #     service_metadata, grouped_docs
+            # )
 
-            group_entries = [
-                self.adapter.create_group_entry(service_entry, group)
-                for group in grouped_docs
-            ]
+            group_metadata = []
+
+            if grouped_docs:
+                group_metadata.extend(
+                    [
+                        self.harvester.get_device_group_metadata(group)
+                        for group in grouped_docs
+                    ]
+                )
 
             # Step 4: Catalog results
             try:
                 # If classification was performed and successful, use classified documents
                 # Otherwise, use raw documents in a default structure
-                docs_to_catalog = group_entries or {}
 
                 self.logger.debug("Registering data into catalog")
-                self.catalogger.register(service_entry, docs_to_catalog)
+                self.catalogger.register(service_metadata, group_metadata)
             except Exception as e:
                 self.logger.error("Cataloging failed: %s", e)
                 # Still return results even if cataloging fails

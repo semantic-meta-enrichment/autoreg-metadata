@@ -3,9 +3,12 @@ from pathlib import Path
 from ckanapi import RemoteCKAN
 
 from wrench.catalogger.base import BaseCatalogger
+from wrench.models import CommonMetadata
 
 from .config import SDDIConfig
 from .models import DeviceGroup, OnlineService
+
+DEFAULT_OWNER = "lehrstuhl-fur-geoinformatik"
 
 
 class SDDICatalogger(BaseCatalogger):
@@ -41,20 +44,23 @@ class SDDICatalogger(BaseCatalogger):
 
         self.ckan_server = RemoteCKAN(address=self.endpoint, apikey=self.api_key)
 
-    def register(self, service: OnlineService, groups: list[DeviceGroup]):
+    def register(self, service: CommonMetadata, groups: list[CommonMetadata]):
+        online_service = self._create_online_service(service)
+        device_groups = self._create_device_groups(groups)
+
         try:
-            self._register_api_service(service)
+            self._register_api_service(online_service)
 
             self.logger.info("Successfully registered API Service")
 
             if groups:
-                self._register_device_groups(groups)
-                for d in groups:
+                self._register_device_groups(device_groups)
+                for d in device_groups:
                     self.logger.info(
                         "Creating relationships for device_group %s", d.name
                     )
                     self._register_relationship(
-                        api_service_name=service.name,
+                        api_service_name=online_service.name,
                         device_group_name=d.name,
                     )
 
@@ -98,3 +104,68 @@ class SDDICatalogger(BaseCatalogger):
         return self.ckan_server.call_action(
             action="organization_list",
         )
+
+    def _create_online_service(self, metadata: CommonMetadata) -> OnlineService:
+        return OnlineService(
+            url=metadata.endpoint_url,
+            name=metadata.identifier,
+            notes=metadata.description,
+            owner_org=metadata.owner or DEFAULT_OWNER,
+            title=metadata.title,
+            tags=[{"name": tag for tag in metadata.tags}],
+            spatial=metadata.spatial_extent,
+        )
+
+    def _create_device_groups(
+        self, metadata: list[CommonMetadata]
+    ) -> list[DeviceGroup]:
+        DOMAIN_GROUPS = [
+            "administration",
+            "mobility",
+            "environment",
+            "agriculture",
+            "urban-planning",
+            "health",
+            "energy",
+            "information-technology",
+            "tourism",
+            "living",
+            "education",
+            "construction",
+            "culture",
+            "trade",
+            "craft",
+            "work",
+        ]
+
+        device_groups: list[DeviceGroup] = []
+
+        for group in metadata:
+            device_group = DeviceGroup(
+                url=group.endpoint_url,
+                name=group.identifier,
+                notes=group.description,
+                owner_org=group.owner or DEFAULT_OWNER,
+                title=group.title,
+                tags=[{"name": tag} for tag in group.tags],
+                spatial=group.spatial_extent,
+                resources=[
+                    {
+                        "name": f"URL for {group.title}",
+                        "description": f"URL provides a list of all data associated "
+                        f"with the category {group.title}",
+                        "format": "JSON",
+                        "url": group.endpoint_url,
+                    }
+                ],
+            )
+            device_group.groups.extend(
+                [
+                    {"name": domain}
+                    for domain in group.thematic_groups
+                    if domain in DOMAIN_GROUPS
+                ]
+            )
+            device_groups.append(device_group)
+
+        return device_groups

@@ -1,8 +1,6 @@
 from enum import Enum
 
-from pydantic import Field, computed_field
-
-from wrench.models import CatalogEntry
+from pydantic import BaseModel, Field, computed_field
 
 
 class SDDICategory(Enum):
@@ -10,11 +8,11 @@ class SDDICategory(Enum):
     device = "device"
 
 
-class SDDIDataset(CatalogEntry):
+class SDDIDataset(BaseModel):
     # required
-    id: str = Field(serialization_alias="name")  # use "name" for the JSON payload
-    name: str = Field(serialization_alias="title")
-    description: str = Field(serialization_alias="notes")
+    name: str = Field(serialization_alias="name")  # use "name" for the JSON payload
+    title: str = Field(serialization_alias="title")
+    notes: str = Field(serialization_alias="notes")
     owner_org: str
     # optional with predefined defaults
     url: str | None = None
@@ -68,7 +66,7 @@ class DeviceGroup(SDDIDataset):
         name: str,
         description: str,
         tags: list[dict[str, str]],
-        resources: list = None,
+        resources: list = [],
     ) -> "DeviceGroup":
         # Get all fields from api_service except 'groups' and 'resources'
         ckan_name = name.lower().strip().replace(" ", "_")

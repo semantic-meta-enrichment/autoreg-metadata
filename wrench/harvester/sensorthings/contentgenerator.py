@@ -1,79 +1,52 @@
-from abc import ABC, abstractmethod
 from pathlib import Path
 
 import yaml
 from ollama import Client
 from pydantic import BaseModel, Field
 
-from wrench.catalogger.base import BaseCatalogger
 from wrench.grouper.base import Group
-from wrench.harvester.base import BaseHarvester
-from wrench.log import logger
-from wrench.models import CatalogEntry, CommonMetadata
+from wrench.models import CommonMetadata
 
 
-class AdapterConfig(BaseModel):
+class Content(BaseModel):
+    name: str
+    description: str
+
+
+class GeneratorConfig(BaseModel):
+    """Configuration for SDDI Catalogger."""
+
     @classmethod
-    def from_yaml(cls, config: str | Path) -> "AdapterConfig":
+    def from_yaml(cls, config: str | Path) -> "GeneratorConfig":
         with open(config, "r") as f:
             config_dict = yaml.safe_load(f)
         return cls.model_validate(config_dict)
 
-    llm_host: str = Field(
-        description="Ollama host endpoint used to generate name and descriptions for catalog entries"
-    )
+    llm_host: str = Field(description="URL for the LLM host")
 
-    llm_model: str = Field(
-        description="Name of Ollama model to use to generate the name and description"
-    )
+    model: str = Field(description="LLM model to use")
 
 
-class BaseCatalogAdapter[H: BaseHarvester, C: BaseCatalogger](ABC):
-    """H = Type of Harvester, C = Type of Catalogger."""
-
-    def __init__(self, llm_host: str, model: str):
+class ContentGenerator:
+    def __init__(self, config: GeneratorConfig | str | Path):
         """
-        Initializes the base adapter with the given language model host and model name.
+        Initialize the LLM based content generator for entry metadata.
 
         Args:
-            llm_host (str): The host address of the language model.
-            model (str): The name of the model to be used.
+            config (GeneratorConfig | str | Path): LLM config for content generation
+            provided directly or via path to YAML file
+
         """
-        self.llm = Client(host=llm_host)
-        self.model = model
-        self.logger = logger.getChild(self.__class__.__name__)
+        if isinstance(config, (str, Path)):
+            config = GeneratorConfig.from_yaml(config)
 
-    @abstractmethod
-    def create_service_entry(self, metadata: CommonMetadata) -> CatalogEntry:
-        """
-        Creates a service entry in the catalog using the provided metadata.
+        self.config = config
+        self.client = Client(host=self.config.llm_host)
+        self.model = self.config.model
 
-        Args:
-            metadata (CommonMetadata): The metadata information
-                                       required to create the catalog entry.
-
-        Returns:
-            CatalogEntry: The created catalog entry.
-        """
-        pass
-
-    @abstractmethod
-    def create_group_entry(
-        self, service_entry: CatalogEntry, group: Group
-    ) -> CatalogEntry:
-        """
-        Creates a new group entry in the catalog.
-
-        Args:
-            service_entry (CatalogEntry): The catalog entry representing the service.
-            group (Group): The group to which the service entry will be added.
-
-        Returns:
-            CatalogEntry: The newly created catalog entry for the group.
-        """
-        pass
-
-    def _generate_catalog_data(self, service_entry, group) -> CatalogEntry:
+    def generate_content(
+        self, service_metadata: CommonMetadata, group: Group
+    ) -> tuple[str, str]:
         system_prompt = """You are an agent generating name and description for a urban sensor metadata catalog entry
               based on solely the information given by the user, do not add extra information which is not given by the user.
               Here are some examples of name and descriptions:
@@ -118,16 +91,19 @@ class BaseCatalogAdapter[H: BaseHarvester, C: BaseCatalogger](ABC):
                 "role": "user",
                 "content": prompt.format(
                     measured_param=group.name,
-                    title=service_entry.name,
+                    title=service_metadata.title,
                     data=[group.items[0]],
                 ),
             },
         ]
-        response = self.llm.chat(
+        response = self.client.chat(
             model=self.model,
             messages=messages,
-            format=CatalogEntry.model_json_schema(),
+            format=Content.model_json_schema(),
         )
         if not response.message.content:
             raise RuntimeError("LLM returned no messages")
-        return CatalogEntry.model_validate_json(response.message.content)
+
+        content = Content.model_validate_json(response.message.content)
+
+        return content.name, content.description
